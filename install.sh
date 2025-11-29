@@ -311,6 +311,8 @@ EOF
 }
 
 main() {
+    cd /root 2>/dev/null || cd /tmp || log_error "Failed to change to valid directory"
+    
     log_info "Hyperliquid Node Installer for Mainnet"
     echo
     
