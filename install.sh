@@ -19,7 +19,9 @@ trap 'log_error "Script failed at line $LINENO"' ERR
 
 check_root() {
     log_info "Checking root privileges..."
-    [[ $EUID -ne 0 ]] && log_error "Run as root: sudo $0"
+    if [[ $EUID -ne 0 ]]; then
+        log_error "Run as root: sudo $0"
+    fi
 }
 
 check_requirements() {
@@ -116,18 +118,29 @@ EOF
 EOF
     
     log_info "Configuring firewall..."
-    if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
-        log_info "UFW is active, configuring rules..."
-        ufw allow 4000:4010/tcp comment 'Hyperliquid P2P' > /dev/null || log_warn "Failed to add P2P firewall rule"
+    if ! command -v ufw &> /dev/null; then
+        log_warn "UFW not installed, installing..."
+        apt-get install -y ufw || log_warn "Failed to install UFW"
+    fi
+
+    if command -v ufw &> /dev/null; then
+        if ! ufw status | grep -q "Status: active"; then
+            log_info "Enabling UFW..."
+            ufw --force enable || log_warn "Failed to enable UFW"
+        fi
+        
+        log_info "Opening required ports..."
+        ufw allow ssh comment 'SSH' > /dev/null 2>&1 || true
+        ufw allow 4000:4010/tcp comment 'Hyperliquid P2P' || log_warn "Failed to add P2P firewall rule"
         
         if [[ "$RPC_EXTERNAL" == "true" ]]; then
             log_warn "Opening RPC port 3001 to external connections"
-            ufw allow 3001/tcp comment 'Hyperliquid RPC' > /dev/null || log_warn "Failed to add RPC firewall rule"
+            ufw allow 3001/tcp comment 'Hyperliquid RPC' || log_warn "Failed to add RPC firewall rule"
         fi
+        
+        ufw status numbered
     else
-        log_warn "UFW not active, configure firewall manually:"
-        log_warn "  - Allow ports 4000-4010/tcp (P2P)"
-        [[ "$RPC_EXTERNAL" == "true" ]] && log_warn "  - Allow port 3001/tcp (RPC)"
+        log_warn "Configure firewall manually: allow ports 4000-4010/tcp"
     fi
 }
 
@@ -251,7 +264,7 @@ show_info() {
     local ip
     ip=$(curl -s4 --max-time 5 ifconfig.me || echo "UNKNOWN")
     
-    cat <<EOF
+    echo -e
 
 ${GREEN}╔════════════════════════════════════════════════════════════╗
 ║           Hyperliquid Node Installation Complete          ║
@@ -268,7 +281,7 @@ ${GREEN}RPC Endpoints:${NC}
 EOF
 
     if [[ "$RPC_EXTERNAL" == "true" ]]; then
-        cat <<EOF
+        echo -e
   
   ${RED}External RPC:${NC} http://$ip:3001/evm
   ${RED}External Info:${NC} http://$ip:3001/info
@@ -276,7 +289,7 @@ EOF
 EOF
     fi
 
-    cat <<EOF
+    echo -e
 
 ${GREEN}Management Commands:${NC}
   Status:  systemctl status hyperliquid-node
