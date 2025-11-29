@@ -247,16 +247,16 @@ start_node() {
     log_info "Waiting for node to initialize..."
     sleep 10
     
-    for i in {1..30}; do
+    for i in {1..60}; do
         if docker compose logs node 2>&1 | grep -q "applied block\|starting metrics server\|testing latency"; then
             log_info "Node is starting up!"
             break
         fi
-        if [[ $i -eq 30 ]]; then
+        if [[ $i -eq 60 ]]; then
             log_warn "Node startup taking longer than expected"
             log_info "Check logs: docker compose -f $DATA_DIR/docker-compose.yml logs -f node"
         fi
-        sleep 2
+        sleep 3
     done
 }
 
@@ -264,48 +264,42 @@ show_info() {
     local ip
     ip=$(curl -s4 --max-time 5 ifconfig.me || echo "UNKNOWN")
     
-    cat <<EOF
-
-${GREEN}╔════════════════════════════════════════════════════════════╗
-║           Hyperliquid Node Installation Complete          ║
-╚════════════════════════════════════════════════════════════╝${NC}
-
-${YELLOW}Network:${NC} Mainnet
-${YELLOW}Data Directory:${NC} $DATA_DIR
-${YELLOW}Public IP:${NC} $ip
-
-${GREEN}RPC Endpoints:${NC}
-  EVM RPC:  http://127.0.0.1:3001/evm
-  Info API: http://127.0.0.1:3001/info
-  Metrics:  http://127.0.0.1:2112/metrics
-EOF
+    echo ""
+    echo -e "${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║           Hyperliquid Node Installation Complete          ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${YELLOW}Network:${NC} Mainnet"
+    echo -e "${YELLOW}Data Directory:${NC} $DATA_DIR"
+    echo -e "${YELLOW}Public IP:${NC} $ip"
+    echo ""
+    echo -e "${GREEN}RPC Endpoints:${NC}"
+    echo -e "  EVM RPC:  http://127.0.0.1:3001/evm"
+    echo -e "  Info API: http://127.0.0.1:3001/info"
+    echo -e "  Metrics:  http://127.0.0.1:2112/metrics"
 
     if [[ "$RPC_EXTERNAL" == "true" ]]; then
-        cat <<EOF
-  
-  ${RED}External RPC:${NC} http://$ip:3001/evm
-  ${RED}External Info:${NC} http://$ip:3001/info
-  ${YELLOW}WARNING: RPC exposed publicly! Use firewall/VPN${NC}
-EOF
+        echo ""
+        echo -e "  ${RED}External RPC:${NC} http://$ip:3001/evm"
+        echo -e "  ${RED}External Info:${NC} http://$ip:3001/info"
+        echo -e "  ${YELLOW}WARNING: RPC exposed publicly! Use firewall/VPN${NC}"
     fi
 
-    cat <<EOF
-
-${GREEN}Management Commands:${NC}
-  Status:  systemctl status hyperliquid-node
-  Logs:    docker compose -f $DATA_DIR/docker-compose.yml logs -f node
-  Stop:    systemctl stop hyperliquid-node
-  Start:   systemctl start hyperliquid-node
-  Restart: systemctl restart hyperliquid-node
-
-${GREEN}Test Connection:${NC}
-  curl -X POST http://127.0.0.1:3001/info \\
-    -H "Content-Type: application/json" \\
-    -d '{"type":"exchangeStatus"}'
-
-${YELLOW}Initial sync may take several hours${NC}
-Monitor: docker compose -f $DATA_DIR/docker-compose.yml logs -f node
-EOF
+    echo ""
+    echo -e "${GREEN}Management Commands:${NC}"
+    echo -e "  Status:  systemctl status hyperliquid-node"
+    echo -e "  Logs:    docker compose -f $DATA_DIR/docker-compose.yml logs -f node"
+    echo -e "  Stop:    systemctl stop hyperliquid-node"
+    echo -e "  Start:   systemctl start hyperliquid-node"
+    echo -e "  Restart: systemctl restart hyperliquid-node"
+    echo ""
+    echo -e "${GREEN}Test Connection:${NC}"
+    echo -e "  curl -X POST http://127.0.0.1:3001/info \\"
+    echo -e "    -H \"Content-Type: application/json\" \\"
+    echo -e "    -d '{\"type\":\"exchangeStatus\"}'"
+    echo ""
+    echo -e "${YELLOW}Initial sync may take several hours${NC}"
+    echo -e "Monitor: docker compose -f $DATA_DIR/docker-compose.yml logs -f node"
 }
 
 main() {
