@@ -15,54 +15,89 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $*"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
+trap 'log_error "Script failed at line $LINENO"' ERR
+
 check_root() {
+    log_info "Checking root privileges..."
     [[ $EUID -ne 0 ]] && log_error "Run as root: sudo $0"
 }
 
 check_requirements() {
     log_info "Checking hardware requirements..."
     
-    local cpu_cores=$(nproc)
-    local ram_gb=$(free -g | awk '/^Mem:/{print $2}')
-    local disk_gb=$(df -BG / | awk 'NR==2 {print $4}' | sed 's/G//')
+    local cpu_cores
+    cpu_cores=$(nproc 2>/dev/null || echo "0")
+    log_info "CPU cores: $cpu_cores"
     
-    log_info "Detected: ${cpu_cores} vCPUs, ${ram_gb}GB RAM, ${disk_gb}GB free disk"
+    local ram_gb
+    ram_gb=$(free -g 2>/dev/null | awk '/^Mem:/{print $2}' || echo "0")
+    log_info "RAM: ${ram_gb}GB"
     
-    [[ $cpu_cores -lt 16 ]] && log_error "Need 16+ vCPUs (have $cpu_cores)"
-    [[ $ram_gb -lt 60 ]] && log_error "Need 64GB+ RAM (have ${ram_gb}GB)"
-    [[ $disk_gb -lt 450 ]] && log_error "Need 500GB+ free disk (have ${disk_gb}GB)"
+    local disk_gb
+    disk_gb=$(df -BG / 2>/dev/null | awk 'NR==2 {print $4}' | sed 's/G//' || echo "0")
+    log_info "Free disk: ${disk_gb}GB"
     
-    log_info "Hardware requirements met"
+    local errors=0
+    
+    if [[ $cpu_cores -lt 16 ]]; then
+        log_warn "CPU: Need 16+ vCPUs, have $cpu_cores (may work but slow)"
+        ((errors++))
+    fi
+    
+    if [[ $ram_gb -lt 60 ]]; then
+        log_warn "RAM: Need 64GB+, have ${ram_gb}GB (may cause OOM)"
+        ((errors++))
+    fi
+    
+    if [[ $disk_gb -lt 450 ]]; then
+        log_warn "Disk: Need 500GB+ free, have ${disk_gb}GB (will fill up fast)"
+        ((errors++))
+    fi
+    
+    if [[ $errors -gt 0 ]]; then
+        log_warn "Hardware below recommended specs"
+        read -p "Continue anyway? (y/N): " -n 1 -r
+        echo
+        [[ ! $REPLY =~ ^[Yy]$ ]] && log_error "Installation cancelled"
+    else
+        log_info "Hardware requirements met"
+    fi
 }
 
 install_docker() {
     if command -v docker &> /dev/null; then
-        log_info "Docker already installed"
+        log_info "Docker already installed: $(docker --version)"
         return
     fi
     
     log_info "Installing Docker..."
     
-    apt-get update -qq
-    apt-get install -y ca-certificates curl
+    apt-get update -qq || log_error "apt-get update failed"
+    apt-get install -y ca-certificates curl gnupg || log_error "Failed to install prerequisites"
+    
     install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-    chmod a+r /etc/apt/keyrings/docker.asc
+    
+    if [[ ! -f /etc/apt/keyrings/docker.asc ]]; then
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc || log_error "Failed to download Docker GPG key"
+        chmod a+r /etc/apt/keyrings/docker.asc
+    fi
     
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
     
-    apt-get update -qq
-    apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+    apt-get update -qq || log_error "Failed to update apt with Docker repo"
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin || log_error "Failed to install Docker"
     
-    systemctl enable --now docker
-    log_info "Docker installed"
+    systemctl enable --now docker || log_error "Failed to start Docker"
+    
+    docker --version || log_error "Docker installed but not working"
+    log_info "Docker installed successfully"
 }
 
 configure_system() {
     log_info "Configuring system..."
     
-    log_info "Disabling IPv6 (hl-node requirement)"
-    cat > /etc/sysctl.d/99-hyperliquid.conf <<EOF
+    log_info "Disabling IPv6..."
+    cat > /etc/sysctl.d/99-hyperliquid.conf <<'EOF'
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6 = 1
@@ -70,35 +105,36 @@ fs.file-max = 2097152
 net.core.somaxconn = 65535
 net.ipv4.tcp_max_syn_backlog = 8192
 EOF
-    sysctl -p /etc/sysctl.d/99-hyperliquid.conf > /dev/null
+    sysctl -p /etc/sysctl.d/99-hyperliquid.conf > /dev/null || log_warn "Failed to apply sysctl settings"
     
-    log_info "Setting ulimits"
-    cat > /etc/security/limits.d/hyperliquid.conf <<EOF
+    log_info "Setting ulimits..."
+    cat > /etc/security/limits.d/hyperliquid.conf <<'EOF'
 * soft nofile 1048576
 * hard nofile 1048576
 * soft nproc 65535
 * hard nproc 65535
 EOF
     
-    log_info "Configuring firewall"
-    if command -v ufw &> /dev/null; then
-        ufw allow 4000:4010/tcp comment 'Hyperliquid P2P' > /dev/null 2>&1 || true
+    log_info "Configuring firewall..."
+    if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
+        log_info "UFW is active, configuring rules..."
+        ufw allow 4000:4010/tcp comment 'Hyperliquid P2P' > /dev/null || log_warn "Failed to add P2P firewall rule"
         
         if [[ "$RPC_EXTERNAL" == "true" ]]; then
             log_warn "Opening RPC port 3001 to external connections"
-            ufw allow 3001/tcp comment 'Hyperliquid RPC' > /dev/null 2>&1 || true
+            ufw allow 3001/tcp comment 'Hyperliquid RPC' > /dev/null || log_warn "Failed to add RPC firewall rule"
         fi
     else
-        log_warn "ufw not found, configure firewall manually:"
+        log_warn "UFW not active, configure firewall manually:"
         log_warn "  - Allow ports 4000-4010/tcp (P2P)"
         [[ "$RPC_EXTERNAL" == "true" ]] && log_warn "  - Allow port 3001/tcp (RPC)"
     fi
 }
 
 create_compose() {
-    log_info "Creating docker-compose configuration..."
+    log_info "Creating Docker Compose configuration..."
     
-    mkdir -p "$DATA_DIR"
+    mkdir -p "$DATA_DIR" || log_error "Failed to create data directory"
     
     local rpc_ports="127.0.0.1:3001:3001"
     [[ "$RPC_EXTERNAL" == "true" ]] && rpc_ports="0.0.0.0:3001:3001"
@@ -156,6 +192,8 @@ volumes:
   node-bin:
     driver: local
 EOF
+    
+    log_info "Compose file created at $DATA_DIR/docker-compose.yml"
 }
 
 create_systemd() {
@@ -179,33 +217,39 @@ TimeoutStartSec=0
 WantedBy=multi-user.target
 EOF
     
-    systemctl daemon-reload
-    systemctl enable hyperliquid-node.service
+    systemctl daemon-reload || log_error "Failed to reload systemd"
+    systemctl enable hyperliquid-node.service || log_error "Failed to enable service"
+    log_info "Systemd service created and enabled"
 }
 
 start_node() {
-    log_info "Starting Hyperliquid node..."
+    log_info "Pulling Docker image (this may take a while)..."
     
-    cd "$DATA_DIR"
-    docker compose pull
-    systemctl start hyperliquid-node.service
+    cd "$DATA_DIR" || log_error "Failed to cd to $DATA_DIR"
+    docker compose pull || log_error "Failed to pull Docker image"
+    
+    log_info "Starting Hyperliquid node..."
+    systemctl start hyperliquid-node.service || log_error "Failed to start service"
     
     log_info "Waiting for node to initialize..."
     sleep 10
     
     for i in {1..30}; do
-        if docker compose logs node 2>&1 | grep -q "applied block" || \
-           docker compose logs node 2>&1 | grep -q "starting metrics server"; then
-            log_info "Node is syncing!"
+        if docker compose logs node 2>&1 | grep -q "applied block\|starting metrics server\|testing latency"; then
+            log_info "Node is starting up!"
             break
         fi
-        [[ $i -eq 30 ]] && log_warn "Node might be slow to start, check logs"
+        if [[ $i -eq 30 ]]; then
+            log_warn "Node startup taking longer than expected"
+            log_info "Check logs: docker compose -f $DATA_DIR/docker-compose.yml logs -f node"
+        fi
         sleep 2
     done
 }
 
 show_info() {
-    local ip=$(curl -s4 ifconfig.me || echo "UNKNOWN")
+    local ip
+    ip=$(curl -s4 --max-time 5 ifconfig.me || echo "UNKNOWN")
     
     cat <<EOF
 
@@ -228,41 +272,34 @@ EOF
   
   ${RED}External RPC:${NC} http://$ip:3001/evm
   ${RED}External Info:${NC} http://$ip:3001/info
-  ${YELLOW}WARNING: RPC exposed publicly! Use firewall/VPN for security${NC}
+  ${YELLOW}WARNING: RPC exposed publicly! Use firewall/VPN${NC}
 EOF
     fi
 
     cat <<EOF
 
 ${GREEN}Management Commands:${NC}
-  Status:       systemctl status hyperliquid-node
-  Logs:         docker compose -f $DATA_DIR/docker-compose.yml logs -f
-  Stop:         systemctl stop hyperliquid-node
-  Start:        systemctl start hyperliquid-node
-  Restart:      systemctl restart hyperliquid-node
+  Status:  systemctl status hyperliquid-node
+  Logs:    docker compose -f $DATA_DIR/docker-compose.yml logs -f node
+  Stop:    systemctl stop hyperliquid-node
+  Start:   systemctl start hyperliquid-node
+  Restart: systemctl restart hyperliquid-node
 
-${GREEN}Data Access:${NC}
-  Trades:       $DATA_DIR/node-data/_data/hl/data/node_trades/
-  Fills:        $DATA_DIR/node-data/_data/hl/data/node_fills/
-  Order Status: $DATA_DIR/node-data/_data/hl/data/node_order_statuses/
-  Raw Diffs:    $DATA_DIR/node-data/_data/hl/data/node_raw_book_diffs/
-
-${YELLOW}Test Connection:${NC}
+${GREEN}Test Connection:${NC}
   curl -X POST http://127.0.0.1:3001/info \\
     -H "Content-Type: application/json" \\
     -d '{"type":"exchangeStatus"}'
 
-${YELLOW}Next Steps:${NC}
-  1. Monitor sync: docker compose -f $DATA_DIR/docker-compose.yml logs -f node
-  2. Check metrics: curl http://127.0.0.1:2112/metrics
-  3. Initial sync may take several hours
-  
-${GREEN}Done!${NC}
+${YELLOW}Initial sync may take several hours${NC}
+Monitor: docker compose -f $DATA_DIR/docker-compose.yml logs -f node
+
+${GREEN}Installation log saved to: install.log${NC}
 EOF
 }
 
 main() {
     log_info "Hyperliquid Node Installer for Mainnet"
+    echo
     
     check_root
     check_requirements
@@ -274,4 +311,4 @@ main() {
     show_info
 }
 
-main "$@"
+main "$@" 2>&1 | tee /root/hyperliquid-install.log
