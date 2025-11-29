@@ -264,7 +264,7 @@ show_info() {
     local ip
     ip=$(curl -s4 --max-time 5 ifconfig.me || echo "UNKNOWN")
     
-    echo -e
+    cat <<EOF
 
 ${GREEN}╔════════════════════════════════════════════════════════════╗
 ║           Hyperliquid Node Installation Complete          ║
@@ -281,7 +281,7 @@ ${GREEN}RPC Endpoints:${NC}
 EOF
 
     if [[ "$RPC_EXTERNAL" == "true" ]]; then
-        echo -e
+        cat <<EOF
   
   ${RED}External RPC:${NC} http://$ip:3001/evm
   ${RED}External Info:${NC} http://$ip:3001/info
@@ -289,7 +289,7 @@ EOF
 EOF
     fi
 
-    echo -e
+    cat <<EOF
 
 ${GREEN}Management Commands:${NC}
   Status:  systemctl status hyperliquid-node
@@ -305,8 +305,6 @@ ${GREEN}Test Connection:${NC}
 
 ${YELLOW}Initial sync may take several hours${NC}
 Monitor: docker compose -f $DATA_DIR/docker-compose.yml logs -f node
-
-${GREEN}Installation log saved to: install.log${NC}
 EOF
 }
 
